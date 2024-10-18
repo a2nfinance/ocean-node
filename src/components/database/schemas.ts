@@ -66,8 +66,106 @@ export const schemas: Schemas = {
     name: 'c2djobs',
     enable_nested_fields: true,
     fields: [
-      // TO DO C2D
-      { name: '.*', type: 'auto', optional: true }
+      {
+        name: "clusterHash",
+        type: "string",
+        optional: true
+      },
+      {
+        name: "containerImage",
+        type: "string",
+        optional: true
+      },
+      {
+        name: "owner",
+        type: "string",
+        optional: true
+      },
+      {
+        name: "jobId",
+        type: "string",
+        optional: true
+      },
+      {
+        name: "dateCreated",
+        type: "string",
+        optional: true
+      },
+      {
+        name: "dateFinished",
+        type: "object",
+        optional: true
+      },
+      {
+        name: "status",
+        type: "int32",
+        optional: true
+      },
+      {
+        name: "statusText",
+        type: "string",
+        optional: true
+      },
+      {
+        name: "algorithm",
+        type: "object",
+        optional: true
+      },
+      {
+        name: "assets",
+        type: "object[]",
+        optional: true
+      },
+      {
+        name: "agreementId",
+        type: "string",
+        optional: true
+      },
+      {
+        name: "expireTimestamp",
+        type: "float",
+        optional: true
+      },
+      {
+        name: "environment",
+        type: "string",
+        optional: true
+      },
+      {
+        name: "configlogURL",
+        type: "string",
+        optional: true
+      },
+      {
+        name: "publishlogURL",
+        type: "string",
+        optional: true
+      },
+      {
+        name: "algologURL",
+        type: "string",
+        optional: true
+      },
+      {
+        name: "outputsURL",
+        type: "string",
+        optional: true
+      },
+      {
+        name: "stopRequested",
+        type: "bool",
+        optional: true
+      },
+      {
+        name: "isRunning",
+        type: "bool",
+        optional: true
+      },
+      {
+        name: "isStarted",
+        type: "bool",
+        optional: true
+      }
     ]
   },
   indexerSchemas: {

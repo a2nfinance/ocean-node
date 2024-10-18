@@ -1,35 +1,35 @@
+import { ZeroAddress } from 'ethers'
 import { Readable } from 'stream'
-import { C2DClusterType, C2DStatusNumber, C2DStatusText } from '../../@types/C2D/C2D.js'
 import type {
   C2DClusterInfo,
-  ComputeEnvironment,
   ComputeAlgorithm,
   ComputeAsset,
+  ComputeEnvironment,
   ComputeJob,
   ComputeOutput,
-  DBComputeJob,
-  ComputeResult
+  ComputeResult,
+  DBComputeJob
 } from '../../@types/C2D/C2D.js'
-import { ZeroAddress } from 'ethers'
+import { C2DClusterType, C2DStatusNumber, C2DStatusText } from '../../@types/C2D/C2D.js'
 // import { getProviderFeeToken } from '../../components/core/utils/feesHandler.js'
-import { getConfiguration } from '../../utils/config.js'
-import { C2DEngine } from './compute_engine_base.js'
-import { C2DDatabase } from '../database/index.js'
-import { create256Hash } from '../../utils/crypt.js'
-import { Storage } from '../storage/index.js'
-import Dockerode from 'dockerode'
 import type { ContainerCreateOptions, VolumeCreateOptions } from 'dockerode'
-import * as tar from 'tar'
+import Dockerode from 'dockerode'
 import {
+  createReadStream,
   createWriteStream,
   existsSync,
   mkdirSync,
   rmSync,
-  writeFileSync,
   statSync,
-  createReadStream
+  writeFileSync
 } from 'fs'
 import { pipeline } from 'node:stream/promises'
+import * as tar from 'tar'
+import { getConfiguration } from '../../utils/config.js'
+import { create256Hash } from '../../utils/crypt.js'
+import { C2DDatabase } from '../database/index.js'
+import { Storage } from '../storage/index.js'
+import { C2DEngine } from './compute_engine_base.js'
 
 export class C2DEngineDocker extends C2DEngine {
   // eslint-disable-next-line no-useless-constructor
@@ -263,11 +263,14 @@ export class C2DEngineDocker extends C2DEngine {
     this.cronTimer = null
     // get all running jobs
     const jobs = await this.db.getRunningJobs(this.getC2DConfig().hash)
-    console.log('Got jobs for engine ' + this.getC2DConfig().hash)
-    console.log(jobs)
+    console.log('Find jobs for engine ' + this.getC2DConfig().hash)
     const promises: any = []
     for (const job of jobs) {
-      promises.push(this.processJob(job))
+      if (job.status !== C2DStatusNumber.JobFinished) {
+          console.log("Job ID to process:", job.jobId);
+          promises.push(this.processJob(job))
+      }
+      
     }
     // wait for all promises, there is no return
     await Promise.all(promises)
@@ -277,207 +280,230 @@ export class C2DEngineDocker extends C2DEngine {
 
   // eslint-disable-next-line require-await
   private async processJob(job: DBComputeJob) {
-    console.log('Process job started')
-    console.log(job)
-    // has to :
-    //  - monitor running containers and stop them if over limits
-    //  - monitor disc space and clean up
-    /* steps:
-       - instruct docker to pull image
-       - create volume
-       - after image is ready, create the container
-       - download assets & algo into temp folder
-       - download DDOS
-       - tar and upload assets & algo to container
-       - start the container
-       - check if container is exceeding validUntil
-       - if yes, stop it
-       - download /data/outputs and store it locally (or upload it somewhere)
-       - delete the container
-       - delete the volume
-       */
-    if (job.status === C2DStatusNumber.JobStarted) {
-      // pull docker image
-      await this.docker.pull(job.containerImage)
-      job.status = C2DStatusNumber.PullImage
-      job.statusText = C2DStatusText.PullImage
-      await this.db.updateJob(job)
-      return // now we wait until image is ready
-    }
-    if (job.status === C2DStatusNumber.PullImage) {
-      try {
-        const imageInfo = await this.docker.getImage(job.containerImage)
-        // console.log(imageInfo)
-        const details = await imageInfo.inspect()
-        console.log(details)
-        job.status = C2DStatusNumber.ConfiguringVolumes
-        job.statusText = C2DStatusText.ConfiguringVolumes
-        await this.db.updateJob(job)
-        // now we can move forward
-      } catch (e) {
-        // not ready yet
-        // console.log(e)
-      }
-      return
-    }
-    if (job.status === C2DStatusNumber.ConfiguringVolumes) {
-      // create the volume & create container
-      // TO DO C2D:  Choose driver & size
-      const volume: VolumeCreateOptions = {
-        Name: job.jobId + '-volume'
-      }
-      try {
-        await this.docker.createVolume(volume)
-      } catch (e) {
-        job.status = C2DStatusNumber.VolumeCreationFailed
-        job.statusText = C2DStatusText.VolumeCreationFailed
-        job.isRunning = false
-        await this.db.updateJob(job)
-        await this.cleanupJob(job)
-      }
-      // create the container
-      const mountVols: any = { '/data': {} }
-      const hostConfig: any = {
-        Mounts: [
-          {
-            Type: 'volume',
-            Source: volume.Name,
-            Target: '/data',
-            ReadOnly: false
-          }
-        ]
-      }
-      const containerInfo: ContainerCreateOptions = {
-        name: job.jobId + '-algoritm',
-        Image: job.containerImage,
-        AttachStdin: false,
-        AttachStdout: true,
-        AttachStderr: true,
-        Tty: true,
-        OpenStdin: false,
-        StdinOnce: false,
-        Volumes: mountVols,
-        HostConfig: hostConfig
-      }
-      // TO DO - fix the following
-      if (job.algorithm.meta.container.entrypoint) {
-        const newEntrypoint = job.algorithm.meta.container.entrypoint.replace(
-          '$ALGO',
-          '/data/transformation/algorithm'
-        )
-        containerInfo.Entrypoint = newEntrypoint
-      }
-      try {
-        const container = await this.docker.createContainer(containerInfo)
-        console.log(container)
-        job.status = C2DStatusNumber.Provisioning
-        job.statusText = C2DStatusText.Provisioning
-        await this.db.updateJob(job)
-      } catch (e) {
-        job.status = C2DStatusNumber.ContainerCreationFailed
-        job.statusText = C2DStatusText.ContainerCreationFailed
-        job.isRunning = false
-        await this.db.updateJob(job)
-        await this.cleanupJob(job)
-      }
-      return
-    }
-    if (job.status === C2DStatusNumber.Provisioning) {
-      // download algo & assets
-      const ret = await this.uploadData(job)
-      console.log('Upload data')
-      console.log(ret)
-      job.status = ret.status
-      job.statusText = ret.statusText
-      if (job.status !== C2DStatusNumber.RunningAlgorithm) {
-        // failed, let's close it
-        job.isRunning = false
-        await this.db.updateJob(job)
-        await this.cleanupJob(job)
-      } else {
-        await this.db.updateJob(job)
-      }
-    }
-    if (job.status === C2DStatusNumber.RunningAlgorithm) {
-      const container = await this.docker.getContainer(job.jobId + '-algoritm')
-      const details = await container.inspect()
-      console.log('Container inspect')
-      console.log(details)
-      if (job.isStarted === false) {
-        // make sure is not started
-        if (details.State.Running === false) {
-          try {
-            await container.start()
-            job.isStarted = true
+      console.log('=============Process job started=============')
+      console.log("JobID:", job.jobId);
+      console.log("Status:", job.statusText);
+      // has to :
+      //  - monitor running containers and stop them if over limits
+      //  - monitor disc space and clean up
+      /* steps:
+         - instruct docker to pull image
+         - create volume
+         - after image is ready, create the container
+         - download assets & algo into temp folder
+         - download DDOS
+         - tar and upload assets & algo to container
+         - start the container
+         - check if container is exceeding validUntil
+         - if yes, stop it
+         - download /data/outputs and store it locally (or upload it somewhere)
+         - delete the container
+         - delete the volume
+         */
+      if (job.status === C2DStatusNumber.JobStarted) {
+        try {
+            // pull docker image
+            console.log("1. Starting pull docker image");
+            await this.docker.pull(job.containerImage)
+            job.status = C2DStatusNumber.PullImage
+            job.statusText = C2DStatusText.PullImage
             await this.db.updateJob(job)
-            return
-          } catch (e) {
-            // container failed to start
-            console.log(e)
-            job.status = C2DStatusNumber.AlgorithmFailed
-            job.statusText = C2DStatusText.AlgorithmFailed
-            job.algologURL = String(e)
-            job.isRunning = false
-            await this.db.updateJob(job)
-            await this.cleanupJob(job)
-            return
-          }
+            console.log("===========Pull docker image successful======")
+        } catch(e) {
+          console.log("Error when pulling images:", e);
+          job.status = C2DStatusNumber.PullImageFailed;
+          job.statusText = C2DStatusText.ImagePullingFailed;
+          job.isRunning = false;
+          await this.db.updateJob(job)
+          await this.cleanupJob(job)
         }
-      } else {
-        // is running, we need to stop it..
-        const timeNow = Date.now() / 1000
-        console.log('timeNow: ' + timeNow + ' , Expiry: ' + job.expireTimestamp)
-        if (timeNow > job.expireTimestamp || job.stopRequested) {
-          // we need to stop the container
-          // make sure is running
-          console.log('We need to stop')
-          console.log(details.State.Running)
-          if (details.State.Running === true) {
+        return // now we wait until image is ready
+      }
+      if (job.status === C2DStatusNumber.PullImage) {
+        try {
+          console.log("2. Checking created docker image");
+          const imageInfo = await this.docker.getImage(job.containerImage)
+          const details = await imageInfo.inspect()
+          console.log(details)
+          job.status = C2DStatusNumber.ConfiguringVolumes
+          job.statusText = C2DStatusText.ConfiguringVolumes
+          await this.db.updateJob(job)
+          // now we can move forward
+        } catch (e) {
+          console.log("Could not get docker image info:", e);
+        }
+        return
+      }
+      if (job.status === C2DStatusNumber.ConfiguringVolumes) {
+        // create the volume & create container
+        // TO DO C2D:  Choose driver & size
+        const volume: VolumeCreateOptions = {
+          Name: job.jobId + '-volume'
+        }
+        try {
+          console.log("3. Creating volume");
+          await this.docker.createVolume(volume)
+        } catch (e) {
+          job.status = C2DStatusNumber.VolumeCreationFailed
+          job.statusText = C2DStatusText.VolumeCreationFailed
+          job.isRunning = false
+          await this.db.updateJob(job)
+          await this.cleanupJob(job)
+        }
+        // create the container
+        const mountVols: any = { '/data': {} }
+        const hostConfig: any = {
+          Mounts: [
+            {
+              Type: 'volume',
+              Source: volume.Name,
+              Target: '/data',
+              ReadOnly: false
+            }
+          ]
+        }
+        const containerInfo: ContainerCreateOptions = {
+          name: job.jobId + '-algoritm',
+          Image: job.containerImage,
+          AttachStdin: false,
+          AttachStdout: true,
+          AttachStderr: true,
+          Tty: true,
+          OpenStdin: false,
+          StdinOnce: false,
+          Volumes: mountVols,
+          HostConfig: hostConfig
+        }
+        // TO DO - fix the following
+        if (job.algorithm.meta.container.entrypoint) {
+          const newEntrypoint = job.algorithm.meta.container.entrypoint.replace(
+            '$ALGO',
+            '/data/transformations/algorithm'
+          )
+          containerInfo.Entrypoint = newEntrypoint.split(",");
+        }
+        try {
+          console.log("4. Creating container");
+          const container = await this.docker.createContainer(containerInfo)
+          console.log("Created container:", container)
+          job.status = C2DStatusNumber.Provisioning
+          job.statusText = C2DStatusText.Provisioning
+          await this.db.updateJob(job)
+        } catch (e) {
+          console.log("Error when creating container:", e);
+          job.status = C2DStatusNumber.ContainerCreationFailed
+          job.statusText = C2DStatusText.ContainerCreationFailed
+          job.isRunning = false
+          await this.db.updateJob(job)
+          await this.cleanupJob(job)
+        }
+        return
+      }
+      if (job.status === C2DStatusNumber.Provisioning) {
+        console.log("5. Provisioning");
+        // download algo & assets
+        const ret = await this.uploadData(job)
+        console.log('Upload data')
+        console.log(ret)
+        job.status = ret.status
+        job.statusText = ret.statusText
+        if (job.status !== C2DStatusNumber.RunningAlgorithm) {
+          // failed, let's close it
+          job.isRunning = false
+          await this.db.updateJob(job)
+          await this.cleanupJob(job)
+        } else {
+          await this.db.updateJob(job)
+        }
+      }
+      if (job.status === C2DStatusNumber.RunningAlgorithm) {
+        console.log("6. Running algorithm");
+        const container = await this.docker.getContainer(job.jobId + '-algoritm')
+        const details = await container.inspect()
+        console.log('Container inspect')
+        console.log(details)
+        if (job.isStarted === false) {
+          // make sure is not started
+          if (details.State.Running === false) {
             try {
-              await container.stop()
+              await container.start()
+              job.isStarted = true
+              await this.db.updateJob(job)
+              return
             } catch (e) {
-              // we should never reach this, unless the container is already stopped or deleted by someone else
+              // container failed to start
               console.log(e)
+              job.status = C2DStatusNumber.AlgorithmFailed
+              job.statusText = C2DStatusText.AlgorithmFailed
+              job.algologURL = String(e)
+              job.isRunning = false
+              await this.db.updateJob(job)
+              await this.cleanupJob(job)
+              return
             }
           }
-          console.log('Stopped')
-          job.isStarted = false
-          job.status = C2DStatusNumber.PublishingResults
-          job.statusText = C2DStatusText.PublishingResults
-          await this.db.updateJob(job)
-          return
         } else {
-          if (details.State.Running === false) {
+          // is running, we need to stop it..
+          const timeNow = Date.now() / 1000
+          console.log('timeNow: ' + timeNow + ' , Expiry: ' + job.expireTimestamp)
+          if (timeNow > job.expireTimestamp || job.stopRequested) {
+            // we need to stop the container
+            // make sure is running
+            console.log('We need to stop')
+            console.log(details.State.Running)
+            if (details.State.Running === true) {
+              try {
+                await container.stop()
+              } catch (e) {
+                // we should never reach this, unless the container is already stopped or deleted by someone else
+                console.log(e)
+              }
+            }
+            console.log('Stopped')
             job.isStarted = false
             job.status = C2DStatusNumber.PublishingResults
             job.statusText = C2DStatusText.PublishingResults
             await this.db.updateJob(job)
             return
+          } else {
+            if (details.State.Running === false) {
+              job.isStarted = false
+              job.status = C2DStatusNumber.PublishingResults
+              job.statusText = C2DStatusText.PublishingResults
+              await this.db.updateJob(job)
+              return
+            }
           }
         }
       }
-    }
-    if (job.status === C2DStatusNumber.PublishingResults) {
-      // get output
-      job.status = C2DStatusNumber.JobFinished
-      job.statusText = C2DStatusText.JobFinished
-      const container = await this.docker.getContainer(job.jobId + '-algoritm')
-      const outputsArchivePath =
-        this.getC2DConfig().tempFolder + '/' + job.jobId + '/data/outputs/outputs.tar'
-      try {
-        await pipeline(
-          await container.getArchive({ path: '/data/outputs' }),
-          createWriteStream(outputsArchivePath)
-        )
-      } catch (e) {
-        console.log(e)
-        job.status = C2DStatusNumber.ResultsFetchFailed
-        job.statusText = C2DStatusText.ResultsFetchFailed
+      if (job.status === C2DStatusNumber.PublishingResults) {
+        console.log("7. Publishing results");
+        // get output
+        job.status = C2DStatusNumber.JobFinished
+        job.statusText = C2DStatusText.JobFinished
+        const container = await this.docker.getContainer(job.jobId + '-algoritm');
+        const c2dJobFolder = this.getC2DConfig().tempFolder + '/' + job.jobId;
+        const outputsArchivePath = c2dJobFolder + '/data/outputs/outputs.tar';
+        try {
+          await pipeline(
+            await container.getArchive({ path: '/data/outputs' }),
+            createWriteStream(outputsArchivePath)
+          )
+        } catch (e) {
+          console.log(e)
+          job.status = C2DStatusNumber.ResultsFetchFailed
+          job.statusText = C2DStatusText.ResultsFetchFailed
+        }
+        job.isRunning = false;
+        job.outputsURL = outputsArchivePath;
+        job.algologURL = c2dJobFolder + '/data/logs/algorithmLog';
+        await this.db.updateJob(job)
+        await this.cleanupJob(job)
+        console.log("Finished results publishing for job:", job);
+        console.log("===========Processing job ended======")
       }
-      job.isRunning = false
-      await this.db.updateJob(job)
-      await this.cleanupJob(job)
-    }
+   
+    
   }
 
   // eslint-disable-next-line require-await
