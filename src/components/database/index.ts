@@ -17,7 +17,7 @@ import {
 import { C2DDatabase } from './C2DDatabase.js'
 import { DatabaseFactory } from './DatabaseFactory.js'
 import { ElasticsearchSchema } from './ElasticSchemas.js'
-import { TypesenseSchema, typesenseSchemas } from './TypesenseSchemas.js'
+import { TypesenseSchema } from './TypesenseSchemas.js'
 
 export type Schema = ElasticsearchSchema | TypesenseSchema
 
@@ -33,7 +33,10 @@ export class Database {
   constructor(private config: OceanNodeDBConfig) {
     return (async (): Promise<Database> => {
       try {
+        // these 2 are using SQL Lite provider
         this.nonce = await DatabaseFactory.createNonceDatabase(this.config)
+        this.c2d = await DatabaseFactory.createC2DDatabase(this.config)
+        // only for Typesense or Elasticsearch
         if (hasValidDBConfiguration(this.config)) {
           // add this DB transport too
           // once we create a DB instance, the logger will be using this transport as well
@@ -45,7 +48,6 @@ export class Database {
               'Property "LOG_DB" is set to "false". This means logs will NOT be saved to database!'
             )
           }
-          this.c2d = await new C2DDatabase(this.config, typesenseSchemas.c2dSchemas)
           this.ddo = await DatabaseFactory.createDdoDatabase(this.config)
           this.indexer = await DatabaseFactory.createIndexerDatabase(this.config)
           this.logs = await DatabaseFactory.createLogDatabase(this.config)
@@ -53,7 +55,7 @@ export class Database {
           this.ddoState = await DatabaseFactory.createDdoStateDatabase(this.config)
         } else {
           DATABASE_LOGGER.info(
-            'Invalid URL. Only Nonce Database is initialized. Other databases are not available.'
+            'Invalid DB URL. Only Nonce and C2D Databases are initialized. Other databases are not available.'
           )
         }
         return this
