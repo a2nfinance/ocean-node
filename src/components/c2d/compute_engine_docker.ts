@@ -43,6 +43,22 @@ export class C2DEngineDocker extends C2DEngine {
     super(clusterConfig)
     this.db = db
     this.docker = null
+    if (clusterConfig.connection.environments) {
+      let environments: any[] = JSON.parse(clusterConfig.connection.environments);
+      let count = 0;
+      let correctEnvs: ComputeEnvironment[] = [];
+      for(let i=0; i < environments.length; i++) {
+        if (!environments[i].free) {
+          correctEnvs.push({
+            ...environments[i],
+            id: `${clusterConfig.hash}-nofree-${count}`
+          });
+          ++count;
+        }
+      }
+      this.envs = correctEnvs;
+    }
+    
     if (clusterConfig.connection.socketPath) {
       try {
         this.docker = new Dockerode({ socketPath: clusterConfig.connection.socketPath })
@@ -694,28 +710,46 @@ export class C2DEngineDockerFree extends C2DEngineDocker {
      */
     // TO DO C2D - fill consts below
     if (!this.docker) return []
-    const cpuType = ''
-    const currentJobs = 0
-    const consumerAddress = ''
-    const envs: ComputeEnvironment[] = [
-      {
-        id: `${this.getC2DConfig().hash}-free`,
-        cpuNumber: 1,
-        cpuType,
-        gpuNumber: 0,
-        ramGB: 1,
-        diskGB: 1,
-        priceMin: 0,
-        desc: 'Free',
-        currentJobs,
-        maxJobs: 1,
-        consumerAddress,
-        storageExpiry: 600,
-        maxJobDuration: 30,
-        feeToken: ZeroAddress,
-        free: true
+    let envs: ComputeEnvironment[] = []
+    let clusterConfig = this.getC2DConfig();
+    if (clusterConfig.connection.environments) {
+      let environments: any[] = JSON.parse(clusterConfig.connection.environments);
+      let count = 0;
+      
+      for(let i=0; i < environments.length; i++) {
+        if (environments[i].free) {
+          envs.push({
+            ...environments[i],
+            id: `${clusterConfig.hash}-free-${count}`
+          });
+          ++count;
+        }
       }
-    ]
+    } else {
+      const cpuType = ''
+      const currentJobs = 0
+      const consumerAddress = ''
+      envs = [
+        {
+          id: `${this.getC2DConfig().hash}-free`,
+          cpuNumber: 1,
+          cpuType,
+          gpuNumber: 0,
+          ramGB: 1,
+          diskGB: 1,
+          priceMin: 0,
+          desc: 'Free',
+          currentJobs,
+          maxJobs: 1,
+          consumerAddress,
+          storageExpiry: 600,
+          maxJobDuration: 30,
+          feeToken: ZeroAddress,
+          free: true
+        }
+      ]
+    }
+
     return envs
   }
 
